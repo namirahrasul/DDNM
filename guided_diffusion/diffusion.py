@@ -77,9 +77,10 @@ def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_time
 
 
 class Diffusion(object):
-    def __init__(self, args, config, device=None):
+    def __init__(self, args, config, device=None, mask_folder=None):   # add mask_folder
         self.args = args
         self.config = config
+        self.mask_folder = mask_folder   # store it
         if device is None:
             device = (
                 torch.device("cuda")
