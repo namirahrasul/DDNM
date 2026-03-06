@@ -259,10 +259,14 @@ class Diffusion(object):
     
             # <-- NEW: Load mask for this image (if mask_folder provided)
             if self.mask_folder is not None:
-                mask_path = os.path.join(self.mask_folder, f"{idx_so_far}.npy")
-                mask = torch.from_numpy(np.load(mask_path)).to(self.device).float()
+                mask_path = os.path.join(self.mask_folder, f"{idx_so_far}.png")
+                from PIL import Image
+                mask_pil = Image.open(mask_path).convert('L')          # convert to grayscale
+                mask_np = np.array(mask_pil)
+                mask_np = (mask_np > 127).astype(np.float32)           # threshold: white > 127 becomes 1
+                mask = torch.from_numpy(mask_np).to(self.device).float()
             else:
-                # fallback to default mask
+                # fallback to default mask.npy
                 mask = torch.from_numpy(np.load("exp/inp_masks/mask.npy")).to(self.device).float()
     
             # <-- NEW: Define degradation operators inside the loop, using the current mask
