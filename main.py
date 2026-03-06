@@ -35,6 +35,8 @@ def parse_args_and_config():
         required=True,
         help="Path of the test dataset.",
     )
+    parser.add_argument('--mask_folder', type=str, default=None,
+                    help='Folder containing masks (one .npy file per image, named by index).')
     parser.add_argument(
         "--sigma_y", type=float, default=0., help="sigma_y"
     )
@@ -162,7 +164,7 @@ def main():
     args, config = parse_args_and_config()
 
     try:
-        runner = Diffusion(args, config)
+        runner = Diffusion(args, config, mask_folder=args.mask_folder)   # <-- add this argument
         runner.sample(args.simplified)
     except Exception:
         logging.error(traceback.format_exc())
