@@ -211,90 +211,43 @@ class Diffusion(object):
             
     def simplified_ddnm_plus(self, model, cls_fn):
         args, config = self.args, self.config
-
+    
         dataset, test_dataset = get_dataset(args, config)
-
+    
         device_count = torch.cuda.device_count()
-
+    
         if args.subset_start >= 0 and args.subset_end > 0:
             assert args.subset_end > args.subset_start
             test_dataset = torch.utils.data.Subset(test_dataset, range(args.subset_start, args.subset_end))
         else:
             args.subset_start = 0
             args.subset_end = len(test_dataset)
-
+    
         print(f'Dataset has size {len(test_dataset)}')
-
+    
         def seed_worker(worker_id):
             worker_seed = args.seed % 2 ** 32
             np.random.seed(worker_seed)
             random.seed(worker_seed)
-
+    
         g = torch.Generator()
         g.manual_seed(args.seed)
+    
+        # <-- NEW: Disable shuffling when using mask folder to keep index order
         val_loader = data.DataLoader(
             test_dataset,
             batch_size=config.sampling.batch_size,
-            shuffle=True,
+            shuffle=False if self.mask_folder else True,   # <-- MODIFIED
             num_workers=config.data.num_workers,
             worker_init_fn=seed_worker,
             generator=g,
         )
-
-        # get degradation operator
-        print("args.deg:",args.deg)
-        if args.deg =='colorization':
-            A = lambda z: color2gray(z)
-            Ap = lambda z: gray2color(z)
-        elif args.deg =='denoising':
-            A = lambda z: z
-            Ap = A
-        elif args.deg =='sr_averagepooling':
-            scale=round(args.deg_scale)
-            A = torch.nn.AdaptiveAvgPool2d((256//scale,256//scale))
-            Ap = lambda z: MeanUpsample(z,scale)
-        elif args.deg =='inpainting':
-            loaded = np.load("exp/inp_masks/mask.npy")
-            mask = torch.from_numpy(loaded).to(self.device)
-            A = lambda z: z*mask
-            Ap = A
-        elif args.deg =='mask_color_sr':
-            loaded = np.load("exp/inp_masks/mask.npy")
-            mask = torch.from_numpy(loaded).to(self.device)
-            A1 = lambda z: z*mask
-            A1p = A1
-            
-            A2 = lambda z: color2gray(z)
-            A2p = lambda z: gray2color(z)
-            
-            scale=round(args.deg_scale)
-            A3 = torch.nn.AdaptiveAvgPool2d((256//scale,256//scale))
-            A3p = lambda z: MeanUpsample(z,scale)
-            
-            A = lambda z: A3(A2(A1(z)))
-            Ap = lambda z: A1p(A2p(A3p(z)))
-        elif args.deg =='diy':
-            # design your own degradation
-            loaded = np.load("exp/inp_masks/mask.npy")
-            mask = torch.from_numpy(loaded).to(self.device)
-            A1 = lambda z: z*mask
-            A1p = A1
-            
-            A2 = lambda z: color2gray(z)
-            A2p = lambda z: gray2color(z)
-            
-            scale=args.deg_scale
-            A3 = torch.nn.AdaptiveAvgPool2d((256//scale,256//scale))
-            A3p = lambda z: MeanUpsample(z,scale)
-            
-            A = lambda z: A3(A2(A1(z)))
-            Ap = lambda z: A1p(A2p(A3p(z)))
-        else:
-            raise NotImplementedError("degradation type not supported")
-
-        args.sigma_y = 2 * args.sigma_y #to account for scaling to [-1,1]
+    
+        # <-- REMOVED: The old degradation operator definitions were here (they are now inside the loop)
+    
+        args.sigma_y = 2 * args.sigma_y  # to account for scaling to [-1,1]
         sigma_y = args.sigma_y
-        
+    
         print(f'Start from {args.subset_start}')
         idx_init = args.subset_start
         idx_so_far = args.subset_start
@@ -303,14 +256,62 @@ class Diffusion(object):
         for x_orig, classes in pbar:
             x_orig = x_orig.to(self.device)
             x_orig = data_transform(self.config, x_orig)
-
+    
+            # <-- NEW: Load mask for this image (if mask_folder provided)
+            if self.mask_folder is not None:
+                mask_path = os.path.join(self.mask_folder, f"{idx_so_far}.npy")
+                mask = torch.from_numpy(np.load(mask_path)).to(self.device).float()
+            else:
+                # fallback to default mask
+                mask = torch.from_numpy(np.load("exp/inp_masks/mask.npy")).to(self.device).float()
+    
+            # <-- NEW: Define degradation operators inside the loop, using the current mask
+            if args.deg == 'colorization':
+                A = lambda z: color2gray(z)
+                Ap = lambda z: gray2color(z)
+            elif args.deg == 'denoising':
+                A = lambda z: z
+                Ap = A
+            elif args.deg == 'sr_averagepooling':
+                scale = round(args.deg_scale)
+                A = torch.nn.AdaptiveAvgPool2d((256 // scale, 256 // scale))
+                Ap = lambda z: MeanUpsample(z, scale)
+            elif args.deg == 'inpainting':
+                A = lambda z: z * mask
+                Ap = A
+            elif args.deg == 'mask_color_sr':
+                A1 = lambda z: z * mask
+                A1p = A1
+                A2 = lambda z: color2gray(z)
+                A2p = lambda z: gray2color(z)
+                scale = round(args.deg_scale)
+                A3 = torch.nn.AdaptiveAvgPool2d((256 // scale, 256 // scale))
+                A3p = lambda z: MeanUpsample(z, scale)
+                A = lambda z: A3(A2(A1(z)))
+                Ap = lambda z: A1p(A2p(A3p(z)))
+            elif args.deg == 'diy':
+                # design your own degradation
+                A1 = lambda z: z * mask
+                A1p = A1
+                A2 = lambda z: color2gray(z)
+                A2p = lambda z: gray2color(z)
+                scale = args.deg_scale
+                A3 = torch.nn.AdaptiveAvgPool2d((256 // scale, 256 // scale))
+                A3p = lambda z: MeanUpsample(z, scale)
+                A = lambda z: A3(A2(A1(z)))
+                Ap = lambda z: A1p(A2p(A3p(z)))
+            else:
+                raise NotImplementedError("degradation type not supported")
+    
+            # <-- END of moved operator definitions
+    
             y = A(x_orig)
-
-            if config.sampling.batch_size!=1:
+    
+            if config.sampling.batch_size != 1:
                 raise ValueError("please change the config file to set batch size as 1")
-
+    
             Apy = Ap(y)
-
+    
             os.makedirs(os.path.join(self.args.image_folder, "Apy"), exist_ok=True)
             for i in range(len(Apy)):
                 tvu.save_image(
@@ -321,7 +322,7 @@ class Diffusion(object):
                     inverse_data_transform(config, x_orig[i]),
                     os.path.join(self.args.image_folder, f"Apy/orig_{idx_so_far + i}.png")
                 )
-                
+    
             # init x_T
             x = torch.randn(
                 y.shape[0],
@@ -330,75 +331,74 @@ class Diffusion(object):
                 config.data.image_size,
                 device=self.device,
             )
-
+    
             with torch.no_grad():
-                skip = config.diffusion.num_diffusion_timesteps//config.time_travel.T_sampling
+                skip = config.diffusion.num_diffusion_timesteps // config.time_travel.T_sampling
                 n = x.size(0)
                 x0_preds = []
                 xs = [x]
-                
-                times = get_schedule_jump(config.time_travel.T_sampling, 
-                                               config.time_travel.travel_length, 
-                                               config.time_travel.travel_repeat,
-                                              )
+    
+                times = get_schedule_jump(config.time_travel.T_sampling,
+                                          config.time_travel.travel_length,
+                                          config.time_travel.travel_repeat,
+                                          )
                 time_pairs = list(zip(times[:-1], times[1:]))
-                
-                
+    
                 # reverse diffusion sampling
                 for i, j in tqdm.tqdm(time_pairs):
-                    i, j = i*skip, j*skip
-                    if j<0: j=-1 
-
-                    if j < i: # normal sampling 
+                    i, j = i * skip, j * skip
+                    if j < 0: j = -1
+    
+                    if j < i:  # normal sampling
                         t = (torch.ones(n) * i).to(x.device)
                         next_t = (torch.ones(n) * j).to(x.device)
                         at = compute_alpha(self.betas, t.long())
                         at_next = compute_alpha(self.betas, next_t.long())
-                        sigma_t = (1 - at_next**2).sqrt()
+                        sigma_t = (1 - at_next ** 2).sqrt()
                         xt = xs[-1].to('cuda')
-
+    
                         et = model(xt, t)
-
+    
                         if et.size(1) == 6:
                             et = et[:, :3]
-
+    
                         # Eq. 12
                         x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
-
+    
                         # Eq. 19
-                        if sigma_t >= at_next*sigma_y:
+                        if sigma_t >= at_next * sigma_y:
                             lambda_t = 1.
-                            gamma_t = (sigma_t**2 - (at_next*sigma_y)**2).sqrt()
+                            gamma_t = (sigma_t ** 2 - (at_next * sigma_y) ** 2).sqrt()
                         else:
-                            lambda_t = (sigma_t)/(at_next*sigma_y)
+                            lambda_t = (sigma_t) / (at_next * sigma_y)
                             gamma_t = 0.
-
+    
                         # Eq. 17
-                        x0_t_hat = x0_t - lambda_t*Ap(A(x0_t) - y)
-
+                        x0_t_hat = x0_t - lambda_t * Ap(A(x0_t) - y)
+    
                         eta = self.args.eta
-
+    
                         c1 = (1 - at_next).sqrt() * eta
                         c2 = (1 - at_next).sqrt() * ((1 - eta ** 2) ** 0.5)
-
+    
                         # different from the paper, we use DDIM here instead of DDPM
                         xt_next = at_next.sqrt() * x0_t_hat + gamma_t * (c1 * torch.randn_like(x0_t) + c2 * et)
-
+    
                         x0_preds.append(x0_t.to('cpu'))
-                        xs.append(xt_next.to('cpu'))    
-                    else: # time-travel back
+                        xs.append(xt_next.to('cpu'))
+                    else:  # time-travel back
                         next_t = (torch.ones(n) * j).to(x.device)
                         at_next = compute_alpha(self.betas, next_t.long())
                         x0_t = x0_preds[-1].to('cuda')
-
+    
                         xt_next = at_next.sqrt() * x0_t + torch.randn_like(x0_t) * (1 - at_next).sqrt()
-
+    
                         xs.append(xt_next.to('cpu'))
-
+    
                 x = xs[-1]
-                
+    
             x = [inverse_data_transform(config, xi) for xi in x]
-
+    
             tvu.save_image(
                 x[0], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{0}.png")
             )
@@ -406,17 +406,14 @@ class Diffusion(object):
             mse = torch.mean((x[0].to(self.device) - orig) ** 2)
             psnr = 10 * torch.log10(1 / mse)
             avg_psnr += psnr
-
+    
             idx_so_far += y.shape[0]
-
+    
             pbar.set_description("PSNR: %.2f" % (avg_psnr / (idx_so_far - idx_init)))
-
+    
         avg_psnr = avg_psnr / (idx_so_far - idx_init)
         print("Total Average PSNR: %.2f" % avg_psnr)
         print("Number of samples: %d" % (idx_so_far - idx_init))
-        
-        
-
     def svd_based_ddnm_plus(self, model, cls_fn):
         args, config = self.args, self.config
 
