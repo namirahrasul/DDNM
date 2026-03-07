@@ -259,7 +259,7 @@ class Diffusion(object):
     
             # <-- NEW: Load mask for this image (if mask_folder provided)
             if self.mask_folder is not None:
-                mask_path = os.path.join(self.mask_folder, f"{idx_so_far}.png")
+                mask_path = os.path.join(self.mask_folder, f"{idx_so_far:06d}.png")
                 from PIL import Image
                 mask_pil = Image.open(mask_path).convert('L')          # convert to grayscale
                 mask_np = np.array(mask_pil)
