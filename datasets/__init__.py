@@ -164,29 +164,12 @@ def get_dataset(args, config):
             test_dataset = Subset(dataset, test_indices)
 
     elif config.data.dataset == 'ImageNet':
-        # only use validation dataset here
-        
-        if config.data.subset_1k:
-            from datasets.imagenet_subset import ImageDataset
-            dataset = ImageDataset(os.path.join(args.exp, 'datasets', 'imagenet', 'imagenet'),
-                     os.path.join(args.exp, 'imagenet_val_1k.txt'),
-                     image_size=config.data.image_size,
-                     normalize=False)
-            test_dataset = dataset
-        elif config.data.out_of_dist:
-            dataset = torchvision.datasets.ImageFolder(
-                os.path.join(args.exp, 'datasets', 'ood'),
-                transform=transforms.Compose([partial(center_crop_arr, image_size=config.data.image_size),
-                transforms.ToTensor()])
-            )
-            test_dataset = dataset
-        else:
-            dataset = torchvision.datasets.ImageNet(
-                os.path.join(args.exp, 'datasets', 'imagenet'), split='val',
-                transform=transforms.Compose([partial(center_crop_arr, image_size=config.data.image_size),
-                transforms.ToTensor()])
-            )
-            test_dataset = dataset
+        transform = transforms.Compose([
+            partial(center_crop_arr, image_size=config.data.image_size),
+            transforms.ToTensor()
+        ])
+        dataset = torchvision.datasets.ImageFolder(args.path_y, transform=transform)
+        test_dataset = dataset
     else:
         dataset, test_dataset = None, None
 
